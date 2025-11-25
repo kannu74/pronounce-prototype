@@ -12,12 +12,16 @@ pydub
 
 # Scoring / logic
 requests
-
+jiwer
+transformers
+torchaudio
+soundfile
 
 # TTS
 gTTS
 
-
+# ASR
+whisper
 
 # Environment variables
 python-dotenv

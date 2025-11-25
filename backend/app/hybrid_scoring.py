@@ -1,0 +1,165 @@
+from pathlib import Path
+import torch
+from .scoring import compute_text_score
+from .audio_scoring import get_embedding, cosine_similarity
+from .tts import tts
+import soundfile as sf
+from .transcribe import transcribe_with_words
+import numpy as np
+
+UPLOAD_ROOT = Path("uploads")
+CANONICAL_ROOT = Path("uploads/canonical")
+
+CANONICAL_ROOT.mkdir(parents=True, exist_ok=True)
+
+def _score_pronunciation(
+    user_audio_path: str,
+    text: str,
+    lang_code: str = "hi"
+) -> float:
+    """
+    Returns a 0-100 pronunciation score for the whole utterance.
+    """
+    # 1) Generate canonical TTS audio for the full target sentence
+    canonical_path = CANONICAL_ROOT / f"canonical_{lang_code}_{abs(hash(text))}.wav"
+    if not canonical_path.exists():
+        tts.synthesize_tts(text=text, lang=lang_code, out_path=str(canonical_path))
+
+    # 2) Compute embeddings
+    emb_canonical = get_embedding(str(canonical_path))
+    emb_user = get_embedding(user_audio_path)
+
+    sim = cosine_similarity(emb_canonical, emb_user)  # approx -1..1
+    # Map to 0–100
+    score = max(0.0, min(100.0, (sim + 1.0) * 50.0))
+    return float(score)
+
+def compute_hybrid_score(
+    target_text: str,
+    recognized_text: str,
+    user_audio_path: str,
+    lang_code: str = "hi"
+) -> dict:
+    """
+    Combines text score and pronunciation score:
+    final = 0.6 * text_score + 0.4 * pronunciation_score
+    """
+    text_result = compute_text_score(target_text, recognized_text)
+    pron_score = _score_pronunciation(user_audio_path, target_text, lang_code)
+
+    final_score = 0.6 * text_result["text_score"] + 0.4 * pron_score
+
+    return {
+        "target_text": target_text,
+        "recognized_text": recognized_text,
+        "text_score": text_result["text_score"],
+        "wer": text_result["wer"],
+        "pronunciation_score": pron_score,
+        "final_score": float(final_score),
+        "word_alignment": text_result["word_alignment"],
+    }
+
+
+def slice_audio_segment(full_audio_path: str, start: float, end: float) -> str:
+    """
+    Slice audio from start to end (in seconds) and save to temp path.
+    """
+    data, sr = sf.read(full_audio_path)
+    start_idx = int(start * sr)
+    end_idx = int(end * sr)
+    start_idx = max(0, start_idx)
+    end_idx = min(len(data), end_idx)
+    segment = data[start_idx:end_idx]
+
+    out_path = Path(full_audio_path).with_suffix("")  # remove extension
+    seg_path = Path(f"{out_path}_seg_{start_idx}_{end_idx}.wav")
+    sf.write(str(seg_path), segment, sr)
+    return str(seg_path)
+
+def compute_per_word_scores(
+    target_text: str,
+    lang_code: str,
+    audio_path: str
+) -> dict:
+    """
+    Returns:
+    {
+      'overall': {... hybrid_score dict ...},
+      'words': [ per-word objects ]
+    }
+    """
+    transcription = transcribe_with_words(audio_path, language=lang_code)
+    recognized_text = transcription["text"]
+    word_timestamps = transcription["words"]
+
+    # Global hybrid scores
+    overall = compute_hybrid_score(
+        target_text=target_text,
+        recognized_text=recognized_text,
+        user_audio_path=audio_path,
+        lang_code=lang_code
+    )
+
+    # Build word alignment
+    text_result = compute_text_score(target_text, recognized_text)
+    alignment = text_result["word_alignment"]
+
+    # Generate canonical TTS per target word for future playback
+    CANONICAL_WORD_ROOT = CANONICAL_ROOT / "words"
+    CANONICAL_WORD_ROOT.mkdir(parents=True, exist_ok=True)
+
+    per_word_results = []
+
+    # Simple mapping assumption: index of alignment where 'target' != ''
+    # track index into word_timestamps for recognized words
+    ts_idx = 0
+    for item in alignment:
+        target_word = item["target"]
+        recog_word = item["recognized"]
+        op = item["operation"]
+
+        # assign timestamp from recognized words if available
+        start = end = None
+        if recog_word and ts_idx < len(word_timestamps):
+            ts = word_timestamps[ts_idx]
+            ts_idx += 1
+            start, end = ts["start"], ts["end"]
+
+        # per-word pronunciation: only if we have timestamps and a target word
+        pron_score = None
+        combined = None
+        seg_path = None
+
+        if start is not None and end is not None and target_word:
+            seg_path = slice_audio_segment(audio_path, start, end)
+
+            # canonical per-word tts
+            tts_path = CANONICAL_WORD_ROOT / f"{lang_code}_{abs(hash(target_word))}.wav"
+            if not tts_path.exists():
+                tts.synthesize_tts(target_word, lang_code, str(tts_path))
+
+            emb_canon = get_embedding(str(tts_path))
+            emb_user = get_embedding(seg_path)
+            sim = cosine_similarity(emb_canon, emb_user)
+            pron_score = max(0.0, min(100.0, (sim + 1.0) * 50.0))
+
+            # Combine this word's textual correctness & pronunciation intuitively:
+            base_text = 100.0 if op == "correct" else 40.0  # heuristics
+            combined = 0.6 * base_text + 0.4 * pron_score
+
+        per_word_results.append({
+            "word": target_word,
+            "recognized": recog_word,
+            "correct": op == "correct",
+            "operation": op,
+            "pronunciation_score": pron_score,
+            "combined_score": combined,
+            "start": start,
+            "end": end,
+            "tts_audio": f"/static/tts_words/{lang_code}_{abs(hash(target_word))}.wav" if target_word else None
+        })
+
+    return {
+        "overall": overall,
+        "words": per_word_results
+    }
