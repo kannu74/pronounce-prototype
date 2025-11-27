@@ -2,6 +2,12 @@ import streamlit as st
 import requests
 import tempfile
 
+
+
+# Load custom CSS
+with open("style.css") as f:
+    st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
+
 BACKEND_URL = "http://localhost:8000/process-audio/"
 
 st.title("Hindi Pronunciation Checker (Local Whisper)")
@@ -31,8 +37,8 @@ if audio_data and st.button("Check Pronunciation"):
 
         st.write("### Word Analysis:")
         for w in res["word_results"]:
-            color = "green" if w["correct"] else "red"
-            st.markdown(f"<span style='color:{color}'>{w['word']}</span>", unsafe_allow_html=True)
+            css_class = "word-correct" if w["correct"] else "word-incorrect"
+            st.markdown(f"<span class='{css_class}'>{w['word']}</span>", unsafe_allow_html=True)
 
         st.write("### Correct Pronunciation (TTS):")
         st.audio("http://localhost:8000" + res["tts_url"])

@@ -4,33 +4,44 @@ from difflib import SequenceMatcher
 from jiwer import wer
 
 def normalize_text(text: str) -> str:
+    """
+    Normalize input text for comparison:
+    - Unicode normalization (NFKC)
+    - Lowercase
+    - Remove punctuation
+    - Collapse multiple spaces
+    """
     if not text:
         return ""
     # Unicode normalization + lowercase
     text = unicodedata.normalize("NFKC", text)
     text = text.lower()
-    # Strip punctuation (simple version)
+    # Remove punctuation
     text = re.sub(r"[^\w\s]", "", text)
-    # Collapse whitespace
+    # Collapse multiple spaces
     text = re.sub(r"\s+", " ", text).strip()
     return text
 
 def tokenize(text: str):
+    """Tokenize normalized text into words."""
     text = normalize_text(text)
     return text.split() if text else []
 
 def compute_text_score(target: str, recognized: str) -> dict:
     """
-    Returns:
+    Compute detailed scoring for recognized text vs target text.
+
+    Returns a dict:
     {
       'text_score': float (0-100),
-      'wer': float,
+      'wer': float (Word Error Rate),
       'word_alignment': [
          {
-           'target': '...',        # expected word or ''
-           'recognized': '...',    # recognized word or ''
+           'target': 'expected word or ""',
+           'recognized': 'recognized word or ""',
            'operation': 'correct' / 'substitution' / 'insertion' / 'deletion'
-         }, ...
+         },
+         ...
       ]
     }
     """
@@ -44,11 +55,11 @@ def compute_text_score(target: str, recognized: str) -> dict:
             "word_alignment": []
         }
 
-    # Global WER
+    # Compute global WER
     error_rate = wer(" ".join(target_tokens), " ".join(rec_tokens))
     text_score = max(0.0, 100.0 * (1.0 - error_rate))
 
-    # Fine-grained alignment via SequenceMatcher
+    # Compute word-level alignment
     sm = SequenceMatcher(None, target_tokens, rec_tokens)
     word_alignment = []
 
