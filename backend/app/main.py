@@ -4,9 +4,9 @@ from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 import shutil
 
-from backend.app.transcribe import transcribe_with_words
-from backend.app.scoring import compute_text_score
-from backend.app.tts import create_tts
+from .transcribe import transcribe_with_words
+from .scoring import compute_text_score
+from .tts import create_tts
 
 app = FastAPI()
 

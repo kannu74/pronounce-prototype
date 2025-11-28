@@ -1,0 +1,29 @@
+# Web servers
+fastapi
+uvicorn[standard]
+
+# Frontend (Streamlit)
+streamlit
+
+# File handling
+python-multipart
+aiofiles
+pydub
+
+# Scoring / logic
+requests
+jiwer
+transformers
+torchaudio
+soundfile
+
+# TTS
+gTTS
+
+# ASR
+whisper
+openai-whisper
+
+
+# Environment variables
+python-dotenv
