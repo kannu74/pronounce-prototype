@@ -3,6 +3,8 @@ import requests
 import tempfile
 import os
 import random
+import re
+from collections import Counter
 
 st.set_page_config(page_title="Pronounce Prototype", layout="centered")
 
@@ -16,6 +18,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 BACKEND_URL = "http://localhost:8000/process-audio/"
+PASSAGE_URL = "http://localhost:8000/get-passage/"
 
 # --- CONFIGURATION ---
 LANGUAGES = {
@@ -26,6 +29,37 @@ LANGUAGES = {
     "Gujarati (ગુજરાતી)": "gu",
     "English": "en"
 }
+
+def highlight_paragraph(passage: str, word_results: list) -> str:
+    """
+    Returns HTML where incorrect target-words are highlighted inline.
+    We highlight by word occurrence count so repeated words are handled.
+    """
+    # Count how many times each target word should be marked incorrect
+    incorrect_counts = Counter()
+    for w in word_results:
+        if w.get("status") == "incorrect":
+            target_word = (w.get("word") or "").strip()
+            if target_word and target_word not in ["(Extra)"]:
+                incorrect_counts[target_word] += 1
+
+    # Tokenize passage preserving separators (spaces/punctuation)
+    tokens = re.findall(r"\w+|[^\w\s]|\s+", passage, flags=re.UNICODE)
+
+    seen = Counter()
+    out = []
+    for tok in tokens:
+        # Only process word tokens; keep punctuation/space as-is
+        if re.match(r"^\w+$", tok, flags=re.UNICODE):
+            seen[tok] += 1
+            if incorrect_counts.get(tok, 0) >= seen[tok]:
+                out.append(f"<span class='word-incorrect'>{tok}</span>")
+            else:
+                out.append(f"<span class='word-correct'>{tok}</span>")
+        else:
+            out.append(tok)
+
+    return "".join(out)
 
 # Simple offline sentence bank
 SENTENCE_BANK = {
@@ -47,14 +81,18 @@ lang_code = LANGUAGES[selected_lang_name]
 # 2. CONTENT GENERATION
 col1, col2 = st.columns([3, 1])
 with col1:
-    if "current_text" not in st.session_state:
-        st.session_state.current_text = SENTENCE_BANK["hi"][0]
-    
-    target_text = st.text_area("Read this aloud:", value=st.session_state.current_text, height=100)
+    if "current_passage" not in st.session_state:
+        # initial fetch
+        r = requests.get(PASSAGE_URL, params={"language": lang_code})
+        st.session_state.current_passage = r.json()["passage"] if r.status_code == 200 else ""
+
+    target_text = st.text_area("Read this aloud (Paragraph Test):", value=st.session_state.current_passage, height=180)
 
 with col2:
-    if st.button("🎲 New Text"):
-        st.session_state.current_text = random.choice(SENTENCE_BANK[lang_code])
+    if st.button("🎲 New Paragraph"):
+        r = requests.get(PASSAGE_URL, params={"language": lang_code})
+        if r.status_code == 200:
+            st.session_state.current_passage = r.json()["passage"]
         st.rerun()
 
 # 3. RECORDING
@@ -104,6 +142,11 @@ if audio_data is not None:
                     
                     if not words:
                         st.warning("⚠️ No words detected. Audio might be too quiet.")
+
+                    # PASSAGE DISPLAY WITH HIGHLIGHTING
+                    st.subheader("Your Passage (Highlighted)")
+                    highlighted_html = highlight_paragraph(st.session_state.current_passage, words)
+                    st.markdown(f"<div class='word-container' style='font-size:20px; line-height:1.8;'>{highlighted_html}</div>", unsafe_allow_html=True)
                     
                     for w in words:
                         target = w.get("word", "")

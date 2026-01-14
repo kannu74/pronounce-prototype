@@ -1,4 +1,5 @@
 import difflib
+import re
 from .transcribe import transcribe_with_words
 
 def compute_per_word_scores(target_text, lang_code, audio_path):
@@ -11,9 +12,9 @@ def compute_per_word_scores(target_text, lang_code, audio_path):
     transcription_result = transcribe_with_words(audio_path, lang_code)
     recognized_text = transcription_result["text"]
 
-    # 2. SPLIT SENTENCES INTO WORDS
-    target_words = target_text.strip().split()
-    recog_words = recognized_text.strip().split()
+    # 2. SPLIT SENTENCES INTO WORDS (UPDATED TO HANDLE PARAGRAPH WORD TIMESTAMPS)
+    target_words = re.findall(r"\w+", target_text, flags=re.UNICODE)
+    recog_words  = re.findall(r"\w+", recognized_text, flags=re.UNICODE)
 
     # 3. ALIGN TARGET ↔ RECOGNIZED USING DIFF LOGIC
     matcher = difflib.SequenceMatcher(None, target_words, recog_words)
