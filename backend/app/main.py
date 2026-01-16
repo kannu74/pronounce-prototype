@@ -6,6 +6,7 @@ from pydub import AudioSegment
 import os
 import time
 import shutil
+import random
 
 # Internal imports
 from .transcribe import transcribe_with_words
@@ -41,6 +42,29 @@ LANG_MAP = {
     "tamil": "ta", "ta": "ta",
     "telugu": "te", "te": "te",
     "gujarati": "gu", "gu": "gu"
+}
+
+PASSAGE_BANK = {
+    "hi": [
+        ("hi_1", "आज सुबह मौसम बहुत अच्छा था। मैं पार्क में टहलने गया और वहाँ कई बच्चे खेल रहे थे। कुछ लोग योग कर रहे थे और पक्षियों की आवाज़ें सुनाई दे रही थीं। मुझे यह शांत वातावरण बहुत पसंद आया।"),
+        ("hi_2", "विद्यालय में आज एक रोचक कार्यक्रम हुआ। हमारे शिक्षक ने हमें किताबों का महत्व समझाया और कहा कि रोज़ थोड़ा पढ़ना चाहिए। मैंने तय किया कि मैं हर दिन नई कहानी पढ़ूँगा।"),
+    ],
+    "en": [
+        ("en_1", "This morning the weather was pleasant. I went for a walk in the park and saw children playing happily. Some people were exercising, and the sound of birds made the place feel calm and peaceful."),
+        ("en_2", "Today we had an interesting session at school. Our teacher explained why reading is important and encouraged us to read daily. I decided to read a new story every day."),
+    ],
+    "ta": [
+        ("ta_1", "இன்று காலை வானிலை மிகவும் நன்றாக இருந்தது. நான் பூங்காவில் நடக்க சென்றேன். அங்கு பல குழந்தைகள் மகிழ்ச்சியாக விளையாடினர். பறவைகளின் குரல் அமைதியாக இருந்தது."),
+    ],
+    "te": [
+        ("te_1", "ఈ రోజు ఉదయం వాతావరణం చాలా మంచిగా ఉంది. నేను పార్క్‌కు నడకకు వెళ్లాను. అక్కడ పిల్లలు ఆనందంగా ఆడుతున్నారు. పక్షుల కిలకిలలు విని నాకు చాలా సంతోషంగా అనిపించింది."),
+    ],
+    "kn": [
+        ("kn_1", "ಇಂದು ಬೆಳಿಗ್ಗೆ ಹವಾಮಾನ ತುಂಬ ಚೆನ್ನಾಗಿತ್ತು. ನಾನು ಉದ್ಯಾನವನಕ್ಕೆ ನಡೆದುಕೊಂಡು ಹೋದೆ. ಅಲ್ಲಿ ಮಕ್ಕಳು ಸಂತೋಷವಾಗಿ ಆಟವಾಡುತ್ತಿದ್ದರು. ಪಕ್ಷಿಗಳ ಶಬ್ದಗಳು ಮನಸ್ಸಿಗೆ ನೆಮ್ಮದಿ ನೀಡಿದವು."),
+    ],
+    "gu": [
+        ("gu_1", "આજે સવારનું હવામાન ખૂબ સરસ હતું. હું બગીચામાં ફરવા ગયો. ત્યાં બાળકો ખુશીથી રમતા હતા. પક્ષીઓનો અવાજ સાંભળીને મને શાંતિ અનુભવાઈ."),
+    ],
 }
 
 def detect_and_rename(filepath: Path) -> Path:
@@ -137,3 +161,13 @@ def process_audio(
             except:
                 pass
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/get-passage/")
+def get_passage(language: str = "hi"):
+    iso_lang_code = LANG_MAP.get(language.lower().strip(), "en")
+    if iso_lang_code not in PASSAGE_BANK or not PASSAGE_BANK[iso_lang_code]:
+        raise HTTPException(status_code=404, detail="No passages available for this language.")
+
+    passage_id, passage = random.choice(PASSAGE_BANK[iso_lang_code])
+    return {"language": iso_lang_code, "passage_id": passage_id, "passage": passage}
