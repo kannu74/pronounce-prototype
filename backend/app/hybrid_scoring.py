@@ -1,106 +1,97 @@
-import difflib
-import re
 from .transcribe import transcribe_with_words
+from .scoring import compute_text_score
+from .audio_scoring import compute_acoustic_clarity
+
+# ---------------------------
+# Fluency Logic
+# ---------------------------
+
+def compute_fluency_metrics(words):
+    """
+    Calculates WPM and Dysfluency events (blocks/pauses).
+    """
+    total_words = len(words)
+    if total_words == 0:
+        return {"wpm": 0, "avg_pause": 0, "blocks": 0}
+        
+    start_time = words[0]["start"]
+    end_time = words[-1]["end"]
+    
+    duration_min = max((end_time - start_time) / 60.0, 0.001)
+    wpm = total_words / duration_min
+    
+    # Analyze Pauses
+    # Skip first word (initial latency is not a dysfluency)
+    pauses = [w["pause_before"] for w in words[1:] if w["pause_before"] is not None]
+    
+    avg_pause = sum(pauses) / len(pauses) if pauses else 0.0
+    
+    # "Blocks" are significant struggles > 1.5s
+    blocks = len([p for p in pauses if p > 1.5])
+    
+    return {
+        "wpm": round(wpm, 1),
+        "avg_pause": round(avg_pause, 2),
+        "blocks": blocks
+    }
+
+def normalize_wpm_score(wpm):
+    """
+    Scores WPM based on 'Comfortable Reading' not 'Speed Reading'.
+    """
+    if wpm >= 110: return 100  # Fluent
+    if wpm <= 20: return 20    # Struggling
+    return (wpm / 110) * 100
+
+# ---------------------------
+# MAIN PIPELINE
+# ---------------------------
 
 def compute_per_word_scores(target_text, lang_code, audio_path):
     """
-    Fuzzy word comparison for Indic languages.
-    Allows partial matches (e.g., 'मुझे' vs 'मूजे', 'ನೀನು' vs 'ನಿನು').
+    Full Assessment Pipeline.
     """
-
-    # 1. TRANSCRIBE
-    transcription_result = transcribe_with_words(audio_path, lang_code)
-    recognized_text = transcription_result["text"]
-
-    # 2. SPLIT SENTENCES INTO WORDS (UPDATED TO HANDLE PARAGRAPH WORD TIMESTAMPS)
-    target_words = re.findall(r"\w+", target_text, flags=re.UNICODE)
-    recog_words  = re.findall(r"\w+", recognized_text, flags=re.UNICODE)
-
-    # 3. ALIGN TARGET ↔ RECOGNIZED USING DIFF LOGIC
-    matcher = difflib.SequenceMatcher(None, target_words, recog_words)
-
-    detailed_words = []
-    total_score = 0
-    matched_count = 0
-
-    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-
-        # --- EXACT MATCH ---
-        if tag == "equal":
-            for i in range(i1, i2):
-                word = target_words[i]
-                detailed_words.append({
-                    "word": word,
-                    "recognized": word,
-                    "status": "correct",
-                    "total_score": 100.0
-                })
-                total_score += 100.0
-                matched_count += 1
-
-        # --- SUBSTITUTION (Fuzzy Match) ---
-        elif tag == "replace":
-            len_t = i2 - i1
-            len_r = j2 - j1
-
-            for k in range(max(len_t, len_r)):
-                t_word = target_words[i1 + k] if k < len_t else ""
-                r_word = recog_words[j1 + k] if k < len_r else ""
-
-                if t_word and r_word:
-                    similarity = difflib.SequenceMatcher(None, t_word, r_word).ratio()
-                    word_score = round(similarity * 100, 1)
-                else:
-                    word_score = 0.0
-
-                status = "correct" if word_score >= 80 else "incorrect"
-
-                detailed_words.append({
-                    "word": t_word if t_word else "(Extra)",
-                    "recognized": r_word if r_word else "(Missed)",
-                    "status": status,
-                    "total_score": word_score
-                })
-
-                if t_word:
-                    total_score += word_score
-                    matched_count += 1
-
-        # --- DELETION ---
-        elif tag == "delete":
-            for i in range(i1, i2):
-                detailed_words.append({
-                    "word": target_words[i],
-                    "recognized": "-",
-                    "status": "incorrect",
-                    "total_score": 0.0
-                })
-                matched_count += 1
-
-        # --- INSERTION (Extra Words) ---
-        elif tag == "insert":
-            for j in range(j1, j2):
-                detailed_words.append({
-                    "word": "(Extra)",
-                    "recognized": recog_words[j],
-                    "status": "extra",
-                    "total_score": 0.0
-                })
-
-    # 4. FINAL SCORES
-    if matched_count > 0:
-        final_pronunciation_score = round(total_score / matched_count, 1)
-    else:
-        final_pronunciation_score = 0.0
-
-    # Fix: Only evaluate accuracy for real target words
-    target_only = [w for w in detailed_words if w["word"] not in ["(Extra)", ""]]
-
-    perfect_matches = len([w for w in target_only if w["total_score"] >= 90])
-    reading_accuracy = round((perfect_matches / len(target_only) * 100), 1) if target_only else 0
-
+    
+    # 1. Transcribe (Speech -> Text + Time)
+    trans_result = transcribe_with_words(audio_path, language=lang_code)
+    words = trans_result["words"]
+    rec_text = trans_result["text"]
+    
+    # 2. Text Scoring (Accuracy + Stutter Detection)
+    text_result = compute_text_score(target_text, rec_text)
+    
+    # 3. Acoustic Scoring (Clarity + Confidence)
+    acoustic_result = compute_acoustic_clarity(audio_path, words)
+    
+    # 4. Fluency Scoring (Speed + Pauses)
+    fluency_stats = compute_fluency_metrics(words)
+    fluency_score = normalize_wpm_score(fluency_stats["wpm"])
+    
+    # 5. Final Composite Score
+    # Weighting: 50% Accuracy, 30% Fluency, 20% Clarity
+    final_score = (
+        0.50 * text_result["text_score"] +
+        0.30 * fluency_score +
+        0.20 * acoustic_result["clarity_score"]
+    )
+    
     return {
-        "overall_pronunciation_score": final_pronunciation_score,
-        "overall_text_score": reading_accuracy,
-        "words": detailed_words
+        "overall_score": round(final_score, 1),
+        
+        "components": {
+            "accuracy": text_result["text_score"],
+            "fluency": round(fluency_score, 1),
+            "clarity": acoustic_result["clarity_score"]
+        },
+        
+        "detailed_metrics": {
+            "wpm": fluency_stats["wpm"],
+            "blocks": fluency_stats["blocks"],
+            "stutters": text_result["metrics"]["stutters"],
+            "correct_words": text_result["metrics"]["correct"],
+            "total_words_read": len(words)
+        },
+        
+        "recognized_text": rec_text,
+        "word_alignment": text_result["word_alignment"]
     }

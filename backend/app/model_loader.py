@@ -1,22 +1,26 @@
 from faster_whisper import WhisperModel
 import torch
 
-# Choose model size
-MODEL_SIZE = "medium"
-
-# Detect device
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-print(f"Loading FasterWhisper model: {MODEL_SIZE} on {DEVICE}...")
-
-# Load model with super-fast INT8 mode
-model = WhisperModel(
-    MODEL_SIZE,
-    device=DEVICE,
-    compute_type="int8"  # int8 = FAST + LOW MEMORY + good accuracy
-)
-
-print("FasterWhisper model loaded successfully.")
+_model = None
 
 def get_model():
-    return model
+    global _model
+
+    if _model is None:
+        # CHANGED: 'medium' -> 'base.en' for faster response time
+        # You can use 'tiny.en' for maximum speed (but slightly less accurate)
+        model_size = "base.en" 
+        
+        print(f"Loading FasterWhisper model: {model_size} on {DEVICE}...")
+        
+        _model = WhisperModel(
+            model_size,
+            device=DEVICE,
+            compute_type="int8" if DEVICE == "cpu" else "float16"
+        )
+
+        print("FasterWhisper model loaded successfully.")
+
+    return _model

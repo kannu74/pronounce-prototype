@@ -1,90 +1,71 @@
 import re
 from .model_loader import get_model
 
-def transcribe_with_words(audio_path: str, language: str = "hi"):
+def clean_word(text: str) -> str:
     """
-    Transcribes audio with forced native-script output for Indic languages.
-    Solves transliteration + Gujarati vowel repetition issues.
+    Removes punctuation to ensure 'Hello,' matches 'hello' in scoring.
     """
+    return re.sub(r'[^\w\s]', '', text).strip()
 
+def transcribe_with_words(audio_path: str, language: str = "en"):
+    """
+    Dyslexia-optimized transcription.
+    
+    Features:
+    - VAD Filter: Ignores heavy breathing/thinking noises.
+    - Confidence Scores: Detects uncertainty/mumbling.
+    - Precise Timing: Captures hesitation intervals.
+    """
+    
     model = get_model()
-
-    # Native script prompts
-    SCRIPT_PROMPTS = {
-        "hi": "नमस्ते, यह हिन्दी भाषा है। कृपया देवनागरी लिपि में लिखें।",
-        "ta": "வணக்கம், இது தமிழ். தயவுசெய்து தமிழ் எழுத்தில் எழுதுங்கள்.",
-        "te": "నమస్కారం, ఇది తెలుగు. దయచేసి తెలుగు లిపిలో రాయండి.",
-        "kn": "ನಮಸ್ಕಾರ, ಇದು ಕನ್ನಡ. ದಯವಿಟ್ಟು ಕನ್ನಡ ಲಿಪಿಯಲ್ಲಿ ಬರೆಯಿರಿ.",
-        "gu": "નમસ્તે, આ ગુજરાતી છે. કૃપા કરી ગુજરાતી લિપિમાં લખો.",
-        "mr": "नमस्कार, ही मराठी भाषा आहे.",
-        "en": "Hello, this is English transcription."
-    }
-
-    selected_prompt = SCRIPT_PROMPTS.get(language, "")
-    print(f"🤖 AI Config -> Language='{language}' | Prompt='{selected_prompt[:25]}...'")
-
-    # FIRST TRANSCRIPTION ATTEMPT
+    
+    # 1. Transcribe with VAD to reduce hallucinations during silence
     segments, info = model.transcribe(
         audio_path,
         language=language,
         task="transcribe",
-        initial_prompt=selected_prompt,
         word_timestamps=True,
-        beam_size=5,
-        temperature=0.0
+        vad_filter=True,
+        vad_parameters=dict(min_silence_duration_ms=500),
+        beam_size=5
     )
-
-    # join text properly
-    full_text = "".join([s.text for s in segments if hasattr(s, "text")]).strip()
-    print(f"📝 Raw Output: {full_text}")
-
-    # ----------------------------------------------
-    # FIX 1: Prevent English transliteration
-    # ----------------------------------------------
-    if language in ["kn", "ta", "te", "gu", "ml"]:
-        english_count = len(re.findall(r"[A-Za-z]", full_text))
-        
-        if english_count > len(full_text) * 0.15:
-            print("⚠️ Detected English transliteration! Retrying with higher temperature...")
-
-            segments_retry, info2 = model.transcribe(
-                audio_path,
-                language=language,
-                task="transcribe",
-                initial_prompt=selected_prompt,
-                word_timestamps=True,
-                beam_size=5,
-                temperature=0.3   # helps native script decoding
-            )
-
-            full_text = "".join([s.text for s in segments_retry if hasattr(s, "text")]).strip()
-            print(f"🔄 Retry Output: {full_text}")
-
-            segments = segments_retry  # use retry segments
     
-
-    # ----------------------------------------------
-    # FIX 2: Gujarati vowel-flooding clean-up
-    # ----------------------------------------------
-    if language == "gu":
-        cleaned = re.sub("ા{2,}", "ા", full_text)
-        full_text = cleaned.strip()
-
-
-    # ----------------------------------------------
-    # WORD TIMESTAMPS
-    # ----------------------------------------------
     words = []
-    for seg in segments:
-        if seg.words:
-            for w in seg.words:
+    full_text_parts = []
+    prev_end = 0.0
+    
+    for segment in segments:
+        full_text_parts.append(segment.text)
+        
+        if not segment.words:
+            continue
+            
+        for w in segment.words:
+            start = float(w.start)
+            end = float(w.end)
+            duration = end - start
+            
+            # Calculate pause before this word
+            pause_before = max(0.0, start - prev_end)
+            
+            # Clean punctuation for downstream scoring
+            cleaned = clean_word(w.word)
+            
+            if cleaned:
                 words.append({
-                    "word": w.word,
-                    "start": w.start,
-                    "end": w.end
+                    "word": cleaned,
+                    "original_word": w.word.strip(),
+                    "start": round(start, 3),
+                    "end": round(end, 3),
+                    "duration": round(duration, 3),
+                    "pause_before": round(pause_before, 3),
+                    "confidence": round(w.probability, 4)  # CRITICAL for dyslexia
                 })
+            
+            prev_end = end
 
     return {
-        "text": full_text,
-        "words": words
+        "text": " ".join(full_text_parts).strip(),
+        "words": words,
+        "language_probs": info.language_probability
     }

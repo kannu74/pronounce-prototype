@@ -1,174 +1,377 @@
 import streamlit as st
 import requests
-import tempfile
-import os
-import random
-import re
-from collections import Counter
+import time
+import threading
+import itertools
+import textwrap
+from pathlib import Path
+from datetime import datetime
+from streamlit.runtime.scriptrunner import add_script_run_ctx
 
-st.set_page_config(page_title="Pronounce Prototype", layout="centered")
+# -----------------------------
+# Configuration
+# -----------------------------
 
-# --- CSS STYLES ---
-st.markdown("""
-<style>
-    .word-container { padding: 15px; border: 1px solid #eee; border-radius: 8px; margin-bottom: 10px; background: white;}
-    .word-correct { color: #155724; background: #d4edda; padding: 2px 5px; border-radius: 4px; font-weight: bold; }
-    .word-incorrect { color: #721c24; background: #f8d7da; padding: 2px 5px; border-radius: 4px; font-weight: bold; text-decoration: line-through; }
-</style>
-""", unsafe_allow_html=True)
+st.set_page_config(
+    page_title="Pronounce Prototype",
+    layout="centered",
+    initial_sidebar_state="collapsed"
+)
 
+# Load External CSS
+def load_css():
+    css_path = Path("frontend/style.css")
+    if css_path.exists():
+        with open(css_path) as f:
+            st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
+    else:
+        st.warning("⚠️ frontend/style.css not found.")
+
+load_css()
+
+# API Config
 BACKEND_URL = "http://localhost:8000/process-audio/"
 PASSAGE_URL = "http://localhost:8000/get-passage/"
 
-# --- CONFIGURATION ---
 LANGUAGES = {
+    "English": "en",
     "Hindi (हिंदी)": "hi",
     "Tamil (தமிழ்)": "ta",
     "Telugu (తెలుగు)": "te",
     "Kannada (ಕನ್ನಡ)": "kn",
     "Gujarati (ગુજરાતી)": "gu",
-    "English": "en"
 }
 
-def highlight_paragraph(passage: str, word_results: list) -> str:
-    """
-    Returns HTML where incorrect target-words are highlighted inline.
-    We highlight by word occurrence count so repeated words are handled.
-    """
-    # Count how many times each target word should be marked incorrect
-    incorrect_counts = Counter()
-    for w in word_results:
-        if w.get("status") == "incorrect":
-            target_word = (w.get("word") or "").strip()
-            if target_word and target_word not in ["(Extra)"]:
-                incorrect_counts[target_word] += 1
+# -----------------------------
+# Rendering Helpers (FIXED)
+# -----------------------------
 
-    # Tokenize passage preserving separators (spaces/punctuation)
-    tokens = re.findall(r"\w+|[^\w\s]|\s+", passage, flags=re.UNICODE)
+def render_comparison_table(error_list):
+    """Renders the detailed error comparison table with Mispronunciation support."""
+    if not error_list:
+        return "<div class='metric-success' style='padding:10px; text-align:center;'>🎉 Perfect Reading! Zero specific errors detected.</div>"
 
-    seen = Counter()
-    out = []
-    for tok in tokens:
-        # Only process word tokens; keep punctuation/space as-is
-        if re.match(r"^\w+$", tok, flags=re.UNICODE):
-            seen[tok] += 1
-            if incorrect_counts.get(tok, 0) >= seen[tok]:
-                out.append(f"<span class='word-incorrect'>{tok}</span>")
-            else:
-                out.append(f"<span class='word-correct'>{tok}</span>")
-        else:
-            out.append(tok)
-
-    return "".join(out)
-
-# Simple offline sentence bank
-SENTENCE_BANK = {
-    "hi": ["नमस्ते, आप कैसे हैं?", "भारत एक विशाल देश है।", "मुझे पानी चाहिए।"],
-    "ta": ["வணக்கம், நீங்கள் எப்படி இருக்கிறீர்கள்?", "எனக்கு தண்ணீர் வேண்டும்.", "தமிழ் என் தாய்மொழி."],
-    "te": ["నమస్కారం, మీరు ఎలా ఉన్నారు?", "భారతదేశం నా మాతృభూమి.", "నాకు ఆకలిగా ఉంది."],
-    "kn": ["ನಮಸ್ಕಾರ, ನೀವು ಹೇಗಿದ್ದೀರಿ?", "ಬೆಂಗಳೂರು ಸುಂದರ ನಗರ.", "ನಾನು ಕನ್ನಡ ಮಾತನಾಡುತ್ತೇನೆ."],
-    "gu": ["નમસ્તે, તમે કેમ છો?", "મારે પાણી જોઈએ છે.", "ગુજરાત એક સુંદર રાજ્ય છે."],
-    "en": ["Hello, how are you?", "The quick brown fox jumps over the lazy dog.", "I love coding."]
-}
-
-st.title("🗣️ Polyglot Pronounce")
-st.write("AI-Powered Speech Therapy for Indian Languages")
-
-# 1. LANGUAGE SELECTOR
-selected_lang_name = st.selectbox("Select Language:", list(LANGUAGES.keys()))
-lang_code = LANGUAGES[selected_lang_name]
-
-# 2. CONTENT GENERATION
-col1, col2 = st.columns([3, 1])
-with col1:
-    if "current_passage" not in st.session_state:
-        # initial fetch
-        r = requests.get(PASSAGE_URL, params={"language": lang_code})
-        st.session_state.current_passage = r.json()["passage"] if r.status_code == 200 else ""
-
-    target_text = st.text_area("Read this aloud (Paragraph Test):", value=st.session_state.current_passage, height=180)
-
-with col2:
-    if st.button("🎲 New Paragraph"):
-        r = requests.get(PASSAGE_URL, params={"language": lang_code})
-        if r.status_code == 200:
-            st.session_state.current_passage = r.json()["passage"]
-        st.rerun()
-
-# 3. RECORDING
-audio_data = st.audio_input(f"🎤 Record in {selected_lang_name}")
-
-if audio_data is not None:
-    # --- CRITICAL FIX 1: PLAYBACK CHECK ---
-    # Try playing this in the browser FIRST. 
-    # If you can't hear yourself here, the Microphone isn't working.
-    st.audio(audio_data) 
-
-    if st.button("Analyze Pronunciation", type="primary"):
+    rows = ""
+    for err in error_list:
+        e_type = err['type']
+        expected = err['expected']
+        actual = err['actual']
         
-        # --- CRITICAL FIX 2: RESET FILE POINTER ---
-        # The file might have been read by the st.audio player above.
-        # We must rewind to the start (byte 0) to read it again.
+        # --- NEW BADGE LOGIC ---
+        if e_type == "mispronunciation":
+            badge = "<span class='badge badge-mis'>Mispronounced</span>"
+            # Highlight the 'Actual' word in Orange to indicate 'Close attempt'
+            actual_html = f"<span style='color:#e67700; font-weight:bold;'>{actual}</span>"
+            
+        elif e_type == "substitution":
+            badge = "<span class='badge badge-sub'>Wrong Word</span>"
+            actual_html = f"<span style='color:#d63384; font-weight:bold;'>{actual}</span>"
+            
+        elif e_type == "deletion":
+            badge = "<span class='badge badge-del'>Skipped</span>"
+            actual_html = "<i>(No Audio)</i>"
+            
+        elif e_type == "insertion":
+            badge = "<span class='badge badge-ins'>Added</span>"
+            actual_html = f"<span style='color:#fd7e14;'>{actual}</span>"
+
+        rows += f"""<tr>
+            <td>{badge}</td>
+            <td><strong>{expected}</strong></td>
+            <td>{actual_html}</td>
+        </tr>"""
+
+    return textwrap.dedent(f"""
+    <div style="overflow-x:auto;">
+        <table class="comparison-table">
+            <thead>
+                <tr>
+                    <th style="width:20%">Error Type</th>
+                    <th style="width:40%">Expected Word</th>
+                    <th style="width:40%">You Said</th>
+                </tr>
+            </thead>
+            <tbody>{rows}</tbody>
+        </table>
+    </div>
+    """)
+
+def render_highlighted_passage(alignment_data):
+    """Generates the Karaoke-style HTML."""
+    html_parts = []
+    for item in alignment_data:
+        target = item.get("target", "")
+        recognized = item.get("recognized", "")
+        status = item.get("status", "unknown")
+        
+        if status == "correct":
+            html_parts.append(f"<span class='word-correct'>{target}</span>")
+        elif status == "substitution":
+            html_parts.append(f"<span class='word-substitution' title='Heard: {recognized}'>{target}</span>")
+        elif status == "deletion":
+            html_parts.append(f"<span class='word-deletion'>{target}</span>")
+        elif status == "insertion":
+            html_parts.append(f"<span class='word-insertion'>+{recognized}</span>")
+        elif status == "stutter":
+            html_parts.append(f"<span class='word-stutter'>{recognized}</span>")
+            
+    return " ".join(html_parts)
+
+def render_terminal_logs(logs):
+    """Generates the Hacker-style Terminal HTML."""
+    if not logs: return ""
+
+    log_lines = ""
+    for log in logs:
+        ts = datetime.fromtimestamp(log['timestamp']).strftime('%H:%M:%S')
+        lvl = log['level']
+        msg = log['message']
+        
+        log_lines += f"""<div class="log-entry">
+            <span class="log-timestamp">[{ts}]</span>
+            <span class="log-{lvl}">{lvl}</span>
+            <span class="log-message">{msg}</span>
+        </div>"""
+
+    return textwrap.dedent(f"""
+    <div class="terminal-window">
+        <div class="terminal-header">
+            <div class="terminal-dots">
+                <div class="dot red"></div><div class="dot yellow"></div><div class="dot green"></div>
+            </div>
+            <div class="terminal-title">system_logs — bash — 80x24</div>
+        </div>
+        <div class="terminal-body">
+            {log_lines}
+            <div style="color: #27c93f; margin-top: 5px;">➜ root@backend: _</div>
+        </div>
+    </div>
+    """)
+
+# -----------------------------
+# Dynamic Loading Logic (FIXED)
+# -----------------------------
+def cycle_status_messages(placeholder, stop_event):
+    """
+    Updates a Streamlit placeholder with friendly, encouraging messages.
+    """
+    messages = [
+        "👂 Listening to your lovely voice...",
+        "✨ You sound amazing!",
+        "🐢 Catching all the words...",
+        "🌟 Checking for magic stars...",
+        "📚 Almost ready...",
+        "🎉 Putting it all together...",
+    ]
+    
+    # Cycle through messages indefinitely
+    for msg in itertools.cycle(messages):
+        if stop_event.is_set():
+            break
+        
+        # Friendly blue/purple color, centered text
+        placeholder.markdown(
+            f"<h3 style='text-align: center; color: #4a4e69; font-family: sans-serif; padding: 20px;'>{msg}</h3>", 
+            unsafe_allow_html=True
+        )
+        time.sleep(1.5)
+
+# -----------------------------
+# UI Application
+# -----------------------------
+
+st.title("🗣️ Pronounce — Reading Assistant")
+st.caption("Dyslexia-Optimized Assessment Engine")
+
+# --- Control Bar ---
+col_lang, col_btn = st.columns([3, 1])
+with col_lang:
+    selected_language = st.selectbox("Select Language", list(LANGUAGES.keys()))
+    lang_code = LANGUAGES[selected_language]
+
+if "current_passage" not in st.session_state:
+    st.session_state.current_passage = "Click 'New Passage' to start."
+
+with col_btn:
+    if st.button("🔄 New Passage", use_container_width=True):
+        try:
+            with st.spinner("Fetching text..."):
+                r = requests.get(PASSAGE_URL, params={"language": lang_code})
+                if r.status_code == 200:
+                    data = r.json()
+                    st.session_state.current_passage = data["passage"]
+                    st.rerun()
+        except:
+            st.error("Backend Down")
+
+# Dynamic Height for Text Area
+text_len = len(st.session_state.current_passage)
+dynamic_height = max(150, int(text_len / 2.5))
+
+target_text = st.text_area(
+    "Read this aloud:", 
+    value=st.session_state.current_passage, 
+    height=dynamic_height
+)
+
+# --- Audio Input ---
+audio_data = st.audio_input("Record your voice")
+
+if audio_data:
+    st.audio(audio_data)
+    
+    if st.button("Analyze Reading", type="primary", use_container_width=True):
+        
+        # Prepare file for upload
         audio_data.seek(0)
-        
-        # --- CRITICAL FIX 3: USE WEBM EXTENSION ---
-        # Browsers record in WebM. Naming it .wav confuses some tools.
-        # We use .webm here, and the Backend will convert it to WAV.
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as tmp:
-            tmp.write(audio_data.read())
-            tmp_path = tmp.name
-
-        # Prepare payload
-        files = {"file": open(tmp_path, "rb")}
+        files = {"file": ("recording.webm", audio_data, "audio/webm")}
         data = {"target_text": target_text, "language": lang_code}
+        
+        # --- DYNAMIC LOADING ANIMATION ---
+        status_placeholder = st.empty()
+        stop_event = threading.Event()
+        
+        # Start the background thread
+        loader_thread = threading.Thread(
+            target=cycle_status_messages, 
+            args=(status_placeholder, stop_event)
+        )
+        
+        # IMPORTANT: Attach Streamlit Context to the thread so it can write to UI
+        add_script_run_ctx(loader_thread)
+        
+        loader_thread.start()
+        
+        try:
+            # Main synchronous API call
+            response = requests.post(BACKEND_URL, files=files, data=data)
+            
+            # Stop the animation
+            stop_event.set()
+            loader_thread.join()
+            status_placeholder.empty() # Clear the loading text
+            
+            if response.status_code != 200:
+                st.error(f"Error: {response.text}")
+                st.stop()
+                
+            result = response.json()
+            
+        except Exception as e:
+            stop_event.set()
+            status_placeholder.empty()
+            st.error(f"Connection Error: {e}")
+            st.stop()
 
-        with st.spinner("Processing speech..."):
-            try:
-                response = requests.post(BACKEND_URL, data=data, files=files)
-                files["file"].close()
-                os.unlink(tmp_path)
+        # -----------------------------
+        # TABBED RESULTS
+        # -----------------------------
+        st.divider()
+        
+        # Extract Data
+        metrics = result.get("metrics", {})
+        scores = result.get("components", {})
+        alignment = result.get("word_alignment", [])
+        error_list = result.get("error_analysis", [])
+        logs = result.get("logs", [])
+        
+        t1, t2, t3, t4 = st.tabs(["📊 Summary", "🔍 Errors", "📖 Text", "💻 Logs"])
 
-                if response.status_code == 200:
-                    res = response.json()
-                    
-                    # --- RESULTS UI ---
-                    st.divider()
-                    m1, m2 = st.columns(2)
-                    m1.metric("Pronunciation Score", f"{res.get('overall_pronunciation_score', 0)}%")
-                    m2.metric("Reading Accuracy", f"{res.get('overall_text_score', 0)}%")
+        # --- TAB 1: SUMMARY (UPDATED) ---
+        with t1:
+            st.subheader("Performance Overview")
+            
+            # --- ROW 1: SUCCESS METRICS (Positive Reinforcement) ---
+            c1, c2, c3 = st.columns(3)
+            
+            # 1. Accuracy
+            c1.metric("Overall Accuracy", f"{metrics.get('accuracy', 0)}%")
+            
+            # 2. Fluency (Now using the Calculated Score)
+            c2.metric("Fluency Score", f"{metrics.get('fluency', 0)}/100")
+            
+            # 3. Correct Words (NEW: Green Card for Motivation)
+            correct_n = metrics.get("correct_count", 0)
+            c3.markdown(f"""
+            <div class="metric-container" style="border-left: 5px solid #28a745;">
+                <div class="metric-label">Words Read Perfectly</div>
+                <div class="metric-value" style="color:#28a745">✨ {correct_n}</div>
+                <div class="sub-metric">Great job!</div>
+            </div>""", unsafe_allow_html=True)
+            
+            st.divider()
+            
+            # --- ROW 2: AREAS TO IMPROVE ---
+            k1, k2, k3, k4 = st.columns(4)
+            
+            # Mispronounced
+            mis = metrics.get("mispronunciation_count", 0)
+            k1.markdown(f"""
+            <div class="metric-container">
+                <div class="metric-label">Mispronounced</div>
+                <div class="metric-value" style="color:#f08c00">{mis}</div>
+                <div class="sub-metric">Close attempts</div>
+            </div>""", unsafe_allow_html=True)
+            
+            # Wrong Words
+            sub = metrics.get("substitution_count", 0)
+            k2.markdown(f"""
+            <div class="metric-container">
+                <div class="metric-label">Wrong Words</div>
+                <div class="metric-value" style="color:#dc3545">{sub}</div>
+                <div class="sub-metric">Try again</div>
+            </div>""", unsafe_allow_html=True)
+            
+            # Skipped
+            dele = metrics.get("deletion_count", 0)
+            k3.markdown(f"""
+            <div class="metric-container">
+                <div class="metric-label">Skipped Words</div>
+                <div class="metric-value" style="color:#6c757d">{dele}</div>
+                <div class="sub-metric">Missed</div>
+            </div>""", unsafe_allow_html=True)
+            
+            # Stutters
+            stut = metrics.get("stutter_count", 0)
+            k4.markdown(f"""
+            <div class="metric-container">
+                <div class="metric-label">Stutters</div>
+                <div class="metric-value" style="color:#ffc107">{stut}</div>
+                <div class="sub-metric">Repeats</div>
+            </div>""", unsafe_allow_html=True)
 
-                    st.subheader("Detailed Breakdown")
-                    words = res.get("words", [])
-                    
-                    if not words:
-                        st.warning("⚠️ No words detected. Audio might be too quiet.")
+            # --- ROW 3: SPEEDOMETER ---
+            st.markdown("<br>", unsafe_allow_html=True)
+            wpm = metrics.get('wpm', 0)
+            
+            display_wpm = min(wpm, 200)
+            marker_pos = (display_wpm / 200) * 100
+            
+            if wpm < 80: speed_text = "Slow"
+            elif wpm > 160: speed_text = "Fast"
+            else: speed_text = "Optimal"
 
-                    # PASSAGE DISPLAY WITH HIGHLIGHTING
-                    st.subheader("Your Passage (Highlighted)")
-                    highlighted_html = highlight_paragraph(st.session_state.current_passage, words)
-                    st.markdown(f"<div class='word-container' style='font-size:20px; line-height:1.8;'>{highlighted_html}</div>", unsafe_allow_html=True)
-                    
-                    for w in words:
-                        target = w.get("word", "")
-                        recognized = w.get("recognized", "")
-                        status = w.get("status", "unknown")
-                        score = w.get("total_score", 0)
+            st.markdown(f"""
+            <div class="speed-container">
+                <div class="metric-label">Speaking Pace: {wpm} Words Per Min ({speed_text})</div>
+                <div class="speed-bar-bg">
+                    <div class="speed-marker" style="left: {marker_pos}%;"></div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
 
-                        color_class = "word-correct" if status == "correct" else "word-incorrect"
-                        emoji = "✅" if status == "correct" else "❌"
-                        
-                        st.markdown(f"""
-                        <div class="word-container">
-                            <div style="display:flex; justify-content:space-between;">
-                                <span style="font-size:1.2em;">{emoji} <b>{target}</b></span>
-                                <span style="font-weight:bold; color:{'green' if score > 80 else 'red'}">{score}/100</span>
-                            </div>
-                            <div style="margin-top:5px; color:#666;">
-                                Heard: <span class="{color_class}">{recognized}</span>
-                            </div>
-                        </div>
-                        """, unsafe_allow_html=True)
-                else:
-                    st.error(f"Error: {response.text}")
-            except Exception as e:
-                st.error(f"Connection Error: {e}")
+        # --- TAB 2: ERROR TABLE ---
+        with t2:
+            st.subheader("Word-by-Word Analysis")
+            st.markdown(render_comparison_table(error_list), unsafe_allow_html=True)
+
+        # --- TAB 3: HIGHLIGHTED TEXT ---
+        with t3:
+            st.subheader("Visual Feedback")
+            html_view = render_highlighted_passage(alignment)
+            st.markdown(f"<div class='passage-box'>{html_view}</div>", unsafe_allow_html=True)
+
+        # --- TAB 4: SYSTEM LOGS ---
+        with t4:
+            st.subheader("Backend Logs")
+            st.markdown(render_terminal_logs(logs), unsafe_allow_html=True)
